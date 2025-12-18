@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "259832857402",
+    "project_id": "split-or-steal-bdaed",
+    "storage_bucket": "split-or-steal-bdaed.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:259832857402:android:58003fa57f621f6b74c603",
+        "android_client_info": {
+          "package_name": "com.example.project_uts"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC_49UoVnkIDHyuam4KamY5cOpgPfxuf_k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

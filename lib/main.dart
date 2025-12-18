@@ -1,8 +1,14 @@
 // split o steal 1
 import 'dart:math'; // import library untuk Random()
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-void main() {
+
+void main() async{
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const SplitStealApp());
 }
 
@@ -38,10 +44,106 @@ enum AiStrategy { random, titForTat, alwaysSplit, alwaysSteal }
 class _GamePageState extends State<GamePage> {
   final Random _rng = Random();
   AiStrategy _selectedStrategy = AiStrategy.random;
+  String? playerId;
+
+  late String roomId;
+  bool isPlayer1 = false;
+
+  Future<void> _joinGame() async {
+    final rooms = FirebaseFirestore.instance.collection('rooms');
+
+    // Try to find a room with only 1 player
+    final query = await rooms
+        .where('player2Id', isNull: true)
+        .limit(1)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      // Join existing room
+      final doc = query.docs.first;
+      roomId = doc.id;
+
+      await doc.reference.update({
+        'player2Id': playerId,
+      });
+    } else {
+      // Create new room
+      final doc = await rooms.add({
+        'player1Id': playerId,
+        'player2Id': null,
+        'player1Choice': null,
+        'player2Choice': null,
+        'player1Score': 0,
+        'player2Score': 0,
+        'roundResolved': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      roomId = doc.id;
+    }
+
+    rooms.doc(roomId).snapshots().listen(_onRoomUpdate);
+  }
+
+
+
+  @override
+  void initState() {
+    super.initState();
+    // _loginAnonymously();
+    _loginAndJoin();
+  }
+
+  Future<void> _loginAndJoin() async {
+    final userCredential =
+    await FirebaseAuth.instance.signInAnonymously();
+
+    playerId = userCredential.user!.uid;
+    debugPrint("Logged in as: $playerId");
+
+    await _joinGame();
+  }
+
+  void _onRoomUpdate(DocumentSnapshot snapshot) {
+    final data = snapshot.data() as Map<String, dynamic>;
+
+    isPlayer1 = data['player1Id'] == playerId;
+
+    setState(() {
+      playerScore = isPlayer1
+          ? data['player1Score']
+          : data['player2Score'];
+
+      aiScore = isPlayer1
+          ? data['player2Score']
+          : data['player1Score'];
+
+      gameFinished = data['status'] == 'finished';
+    });
+
+    _checkAndResolveGame(snapshot.reference, data);
+  }
+
+
+  Future<void> _loginAnonymously() async {
+    final userCredential =
+    await FirebaseAuth.instance.signInAnonymously();
+
+    setState(() {
+      playerId = userCredential.user!.uid;
+    });
+    _joinGame();
+    debugPrint("Logged in as: $playerId");
+  }
+
+
+
 
   // Scores
   int playerScore = 0;
   int aiScore = 0;
+  bool gameFinished = false;
+
 
   // History: list of (playerChoice, aiChoice, playerGain, aiGain)
   final List<Map<String, dynamic>> _history = [];
@@ -52,24 +154,53 @@ class _GamePageState extends State<GamePage> {
   // UI states
   bool _roundActive = true; // not much use but could be used for animations
 
-  void _playRound(Choice playerChoice) {
-    final Choice aiChoice = _aiPick();
-    final pair = _payoff(playerChoice, aiChoice);
+  Future<void> submitChoice(Choice choice) async {
+    final doc = FirebaseFirestore.instance
+        .collection('rooms')
+        .doc(roomId);
 
-    setState(() {
-      playerScore += pair['player'] as int;
-      aiScore += pair['ai'] as int;
-      _history.insert(0, {
-        'player': playerChoice,
-        'ai': aiChoice,
-        'playerGain': pair['player'],
-        'aiGain': pair['ai'],
-        'time': DateTime.now(),
-      });
-      _playersLastChoice = playerChoice;
-      _roundActive = !_roundActive; // toggle for a small UI effect possibility
+    final snapshot = await doc.get();
+    final data = snapshot.data()!;
+
+    final field = isPlayer1 ? 'player1Choice' : 'player2Choice';
+
+    // ❌ Already chosen → block
+    if (data[field] != null) return;
+
+    await doc.update({
+      field: choice.name,
     });
   }
+
+
+  Future<void> _checkAndResolveGame(
+      DocumentReference ref,
+      Map<String, dynamic> data,
+      ) async {
+    if (data['status'] == 'finished') return;
+
+    if (data['player1Choice'] == null ||
+        data['player2Choice'] == null) return;
+
+    final p1 = data['player1Choice'] == 'split'
+        ? Choice.split
+        : Choice.steal;
+    final p2 = data['player2Choice'] == 'split'
+        ? Choice.split
+        : Choice.steal;
+
+    final payoff = _payoff(p1, p2);
+
+    await ref.update({
+      'player1Score': FieldValue.increment(payoff['player']!),
+      'player2Score': FieldValue.increment(payoff['ai']!),
+      'status': 'finished',
+    });
+
+  }
+
+
+
 
   Choice _aiPick() {
     switch (_selectedStrategy) {
@@ -99,20 +230,20 @@ class _GamePageState extends State<GamePage> {
     return {'player': 0, 'ai': 3};
   }
 
-  void _resetGame() {
-    setState(() {
-      playerScore = 0;
-      aiScore = 0;
-      _history.clear();
-      _playersLastChoice = null;
-    });
+  void _resetGame() async {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const GamePage()),
+    );
   }
+
 
   String _choiceToText(Choice c) => c == Choice.split ? 'Split' : 'Steal';
   IconData _choiceToIcon(Choice c) => c == Choice.split ? Icons.handshake : Icons.military_tech;
 
   @override
   Widget build(BuildContext context) {
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Split or Steal — Mini Game'),
@@ -233,7 +364,9 @@ class _GamePageState extends State<GamePage> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         ElevatedButton.icon(
-                          onPressed: () => _playRound(Choice.split),
+                          onPressed: gameFinished ? null : () => submitChoice(Choice.split),
+
+
                           icon: Icon(_choiceToIcon(Choice.split)),
                           label: const Text('Split'),
                           style: ElevatedButton.styleFrom(
@@ -244,7 +377,8 @@ class _GamePageState extends State<GamePage> {
                         ),
                         const SizedBox(width: 20),
                         ElevatedButton.icon(
-                          onPressed: () => _playRound(Choice.steal),
+                          onPressed: gameFinished ? null : () => submitChoice(Choice.steal),
+
                           icon: Icon(_choiceToIcon(Choice.steal)),
                           label: const Text('Steal'),
                           style: ElevatedButton.styleFrom(
